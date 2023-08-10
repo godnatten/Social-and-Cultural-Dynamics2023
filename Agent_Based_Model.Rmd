@@ -1,0 +1,411 @@
+---
+title: "chat_gpt_abm"
+output: html_document
+author: "Natasha Kouznetsove Jørgensen"
+date: "2023-05-30"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+Each iteration represents a day. 
+There are students, ai_agents and teachers. 
+Students can interact with other students, ai_agents and teachers depending on their social_category. 
+When students interact, they gain knowledge. 
+There can only be one interaction per iteration. (i.e day).
+
+
+This is a description of the attributes of the agents, which interactions are based on:
+
+
+
+#Attention: Represents cognitive abilities of the student. Attention modulates learning. 
+
+#interaction_type: Shows who the student in question interacted with. A peer, an ai_agent or a teacher or none. 
+
+#prior knowledge: Measure of knowledge (about a topic) beforehand. This variable is resampled for each tick, assuming prior knowledge is different for different topics. 
+
+
+#Knowledge_gain: Defined as amount of extra knowledge a student acquires from an interaction. 
+
+
+#Social skills: Represents resistance to social norms, conformity, high levels of confidence etc.  
+  Social skills determines your social category:
+  0-33.33 social skills = 'low': No interaction or interact with ai_agents only based on assumptions of fear of embarassement
+  
+  33.33-66.66 social skills = 'medium': interactions with ai_agents and peers. Or no interacction and peers.  Based on assumptions that you are not embarrassed to ask your peers, but you have a fear of embarrassesing yourself by talking to your teacher. 
+  
+  66.66-99.99 social skills = 'high': Possibility of interacting with all three agents with equal probability. Based on assumptions of no fear of embarrassement. 
+  
+
+The resulting data frame should contain all these attributes for each student for each iteration/day.
+
+
+
+
+```{r}
+pacman::p_load(tidyverse, dyngen, ggplot2, rethinking)
+set.seed(7)
+```
+
+Set global parameters
+```{r}
+# Set the number of students, teachers, and AI agents
+n_students <- 36
+n_teachers <- 1
+n_ai_agents <- 36
+max_ticks <-  360 #each tick represents one day
+
+```
+
+###Values from survey
+```{r}
+survey <- read_csv("socult_survey.csv")
+
+mean(survey$preparation) #0.57
+sd(survey$preparation) #0.25
+
+mean(survey$`asking questions`) #0.42
+sd(survey$`asking questions`) #0.28
+
+mean(survey$`social evaluation`) #0.50, social capacity = 1-0.5
+sd(survey$`social evaluation`) #0.29
+
+mean(survey$teacher) #0.94
+sd(survey$teacher)#0.06
+
+mean(survey$peers) #0.93
+sd(survey$peers) #0.07
+
+```
+
+
+```{r}
+df_long <- survey %>%
+  gather(variable, value, -ID)
+
+
+plt <- ggplot(df_long, aes(x = variable, y = value, fill = variable)) +
+  geom_boxplot() +
+  labs(title = "Survey responses",
+       x = "category",
+       y = "Value")
+
+plt + scale_fill_brewer(palette="Blues") + theme_minimal()
+
+
+```
+
+
+```{r}
+hist(survey$`social evaluation`)
+hist(combined_df$social_capacity)
+
+hist(survey$preparation)
+hist(combined_df$prior_knowledge)
+
+hist(survey$teacher)
+t <- combined_df %>% filter(interaction_type== "teacher")
+hist(t$un)
+```
+
+Set agent parameters
+```{r}
+# Define initial values for agent attributes
+student<- tibble(
+  ID = 1:n_students, 
+  Tick = NA,
+  interaction_type = NA,
+  attention = runif(n_students, 0.0, 1.0),
+  social_capacity = rnorm_bounded(n_students, mean=0.5, sd=0.29, min = 0, max = 1),
+  prior_knowledge = rnorm_bounded(n_students, mean=0.47, sd=0.25, min = 0, max = 1),
+understanding_of_context = rnorm_bounded(n_students, mean=0.93, sd=0.07, min = 0, max = 1),
+  information_gain = 0,
+  knowledge_gain = NA,
+ ) 
+
+
+teacher <- tibble(
+  ID = n_teachers,
+  information = 1,
+  understanding_of_context = 0.94
+)
+
+ai_agent <- tibble(
+  ID = 1:n_ai_agents, 
+  information = 1,
+  understanding_of_context = runif(n_ai_agents, 0, 1)
+  )
+  
+```
+
+```{r}
+hist(student$prior_knowledge, xlim =0:1)
+```
+
+
+
+#### AI_Environment ####
+```{r with social skills}
+
+interaction_loop <- function(student, ai_agent, teacher, n_students, max_ticks){
+  df <- tibble(
+    ID = integer(), 
+    Tick = integer(),
+    interaction_type = character(),
+    social_capacity = numeric(),
+    attention = numeric(),
+    prior_knowledge = numeric(),
+    understanding_of_context = numeric(),
+    information_gain = numeric (),
+    knowledge_gain = numeric()
+    
+  ) 
+  
+  #For each student
+    for (i in 1:n_students){
+      student$attention[i] <- runif(n_students, 0.0, 1.0)
+      student$social_capacity[i] <-  student$social_capacity[i]
+      student$prior_knowledge[i] <-rnorm_bounded(n_students, mean=0.5, sd=0.15, min = 0, max = 1)
+    
+      
+          if (student$social_capacity[i] < 0.33) { 
+              j <- sample(1:n_ai_agents, 1)  #interact with 'random' ai
+              student$interaction_type[i] <- "ai_agent"
+              
+              student$information_gain[i] <- ai_agent$information[j]*ai_agent$understanding_of_context[j]*student$attention[i]
+              student$knowledge_gain[i] <- student$information_gain[i]/(1+student$prior_knowledge[i])
+                 
+                }
+              
+                
+              
+        if (between(student$social_capacity[i], 0.33,0.66)){
+              
+              if (runif(1) <= 0.5) { #two options of interaction
+                 
+                 k <- sample(1:n_ai_agents, 1)  #interact with 'random' ai
+              student$interaction_type[i] <- "ai_agent"
+                  
+              student$information_gain[i] <- ai_agent$information[k]*ai_agent$understanding_of_context[k]*student$attention[i]
+              student$knowledge_gain[i] <- student$information_gain[i]/(1+student$prior_knowledge[i])
+                  
+                  }
+              
+            
+            else {
+                 other_student <- sample(setdiff(1:n_students, i), 1)  # Choose a random student to interact with
+            student$interaction_type[i] <- "peer"
+            
+                 student$information_gain[i] <- student$prior_knowledge[other_student]*student$understanding_of_context[other_student]*student$attention[i] 
+            student$knowledge_gain[i] <- student$information_gain[i]/(1+student$prior_knowledge[i])
+        
+            }
+        }
+            
+            
+          if(student$social_capacity[i] > 0.66){
+             event <- sample(1:3, 1)
+             
+             if(event == 1){ #interact with ai
+                h <- sample(1:n_ai_agents, 1) 
+              student$interaction_type[i] <- "ai_agent"
+                  
+                  student$information_gain[i] <- (ai_agent$information[h]*ai_agent$understanding_of_context[h]) * student$attention[i]
+              student$knowledge_gain[i] <- student$information_gain[i]/(1+student$prior_knowledge[i])
+                  }
+              
+             
+              if(event == 2){ #interact with other student
+               other_student <- sample(setdiff(1:n_students, i), 1) 
+               student$interaction_type[i] <- "peer"
+            
+                 student$information_gain[i] <- student$prior_knowledge[other_student]*student$understanding_of_context[other_student]*student$attention[i] 
+            student$knowledge_gain[i] <- student$information_gain[i]/(1+student$prior_knowledge[i])
+                  
+                  }
+            
+             
+             if(event == 3){ #interact with teacher
+               student$interaction_type[i] <- "teacher"
+               student$information_gain[i] <- (teacher$information * teacher$understanding_of_context) * student$attention[i]
+               student$knowledge_gain[i] <- student$information_gain[i]/(1+student$prior_knowledge[i])
+               }
+            }
+          
+      
+          
+      
+   df <- df %>% rows_insert(student[i,], conflict = "ignore")
+    }
+return(df)
+  
+}
+```
+
+```{r}
+res <- interaction_loop(student, ai_agent, teacher, n_students, max_ticks)
+```
+
+```{r}
+df_3 <- list ()
+df_3 <- lapply(1:max_ticks, function(x) interaction_loop(student, ai_agent, teacher, n_students, max_ticks)) #reach student makes an interaction a day, for 360 days 
+##NB: takes quite a while to run
+
+```
+
+```{r}
+ABM_ai <- df_3 %>% bind_rows() #combine all nested data frames to one big data frame
+```
+
+```{r}
+tt <- ABM_ai %>% mutate(Tick = rep(1:360, each = 36))
+tt$understanding_of_context[tt$interaction_type == "teacher"] <- 0.94 #something went wrong during the loop
+
+#ABM_ai_df <- tt %>% mutate(social_cat = case_when(
+    #social_capacity <=0.33 ~ 'low', 
+    #between(social_capacity, 0.33, 0.66)  ~ 'medium',
+    #social_capacity >=0.66 ~ 'high'))
+```
+
+```{r}
+write.csv(ABM_ai_df, "Socult_ABM_df_final.csv")
+```
+
+### No AI Environment ####
+
+```{r no ai}
+
+interaction_loop_no_ai <- function(student, teacher, n_students, max_ticks){
+  df <- tibble(
+    ID = integer(), 
+    Tick = integer(),
+    interaction_type = character(),
+    social_capacity = numeric(),
+    attention = numeric(),
+    prior_knowledge = numeric(),
+    understanding_of_context = numeric(),
+    information_gain = numeric (),
+    knowledge_gain = numeric()
+    
+  ) 
+  
+  #For each student
+    for (i in 1:n_students){
+      student$attention[i] <- runif(n_students, 0.0, 1.0)
+      student$social_capacity[i] <-  student$social_capacity[i]
+      student$prior_knowledge[i] <-rnorm_bounded(n_students, mean=0.5, sd=0.15, min = 0, max = 1)
+            
+          if (student$social_capacity[i] < 0.33) { 
+              j <- sample(1:n_ai_agents, 1)  #interact with 'random' ai
+              student$interaction_type[i] <- "no_interaction"
+              
+              student$information_gain[i] <- 0
+              student$knowledge_gain[i] <- 0
+                 
+                }
+              
+                
+              
+        if (between(student$social_capacity[i], 0.33,0.66)){
+              
+              if (runif(1) <= 0.5) { #two options of interaction
+                 
+                 k <- sample(1:n_ai_agents, 1)  #interact with 'random' ai
+              student$interaction_type[i] <- "no_interaction"
+                  
+              student$information_gain[i] <- 0
+              student$knowledge_gain[i] <- 0
+                  
+                  }
+              
+            
+            else {
+                 other_student <- sample(setdiff(1:n_students, i), 1)  # Choose a random student to interact with
+            student$interaction_type[i] <- "peer"
+            
+                 student$information_gain[i] <- student$prior_knowledge[other_student]*student$understanding_of_context[other_student]*student$attention[i] 
+            student$knowledge_gain[i] <- student$information_gain[i]/(1+student$prior_knowledge[i])
+        
+            }
+        }
+            
+            
+          if(student$social_capacity[i] > 0.66){
+             event <- sample(1:3, 1)
+             
+             if(event == 1){ #interact with ai
+                h <- sample(1:n_ai_agents, 1) 
+              student$interaction_type[i] <- "no_interaction"
+                  
+                  student$information_gain[i] <- 0
+              student$knowledge_gain[i] <- 0
+                  }
+              
+             
+              if(event == 2){ #interact with other student
+               other_student <- sample(setdiff(1:n_students, i), 1) 
+               student$interaction_type[i] <- "peer"
+            
+                 student$information_gain[i] <- student$prior_knowledge[other_student]*student$understanding_of_context[other_student]*student$attention[i] 
+            student$knowledge_gain[i] <- student$information_gain[i]/(1+student$prior_knowledge[i])
+                  
+                  }
+            
+             
+             if(event == 3){ #interact with teacher
+               student$interaction_type[i] <- "teacher"
+               student$information_gain[i] <- teacher$information*teacher$understanding_of_context*student$attention[i]
+               student$knowledge_gain[i] <- student$information_gain[i]/(1+student$prior_knowledge[i])
+               }
+            }
+          
+      
+          
+      
+   df <- df %>% rows_insert(student[i,], conflict = "ignore")
+    }
+return(df)
+  
+}
+```
+
+```{r}
+res_no_ai <- interaction_loop_no_ai(student, teacher, n_students, max_ticks)
+```
+
+```{r}
+df_no_ai <- list ()
+df_3_no_ai <- lapply(1:max_ticks, function(x) interaction_loop_no_ai(student, teacher, n_students, max_ticks))
+```
+
+```{r}
+no_ai <- df_3_no_ai %>% bind_rows() #combine all nested data frames to one big data frame
+```
+
+```{r}
+ABM_no_ai <- no_ai %>% mutate(Tick = rep(1:360, each = 36))
+ABM_no_ai$understanding_of_context[ABM_no_ai$interaction_type == "teacher"] <- 0.94 #something went wrong during the loop
+
+ABM_no_ai_df <- ABM_no_ai %>% mutate(social_cat = case_when(
+    social_capacity <=0.33 ~ 'low', 
+    between(social_capacity, 0.33, 0.66)  ~ 'medium',
+    social_capacity >=0.66 ~ 'high'))
+```
+
+```{r}
+write.csv(ABM_no_ai_df, "Socult_ABM_df_final_no_ai.csv")
+```
+rbind(final)
+```{r}
+combined_df <- rbind(ABM_ai_df, ABM_no_ai_df)
+```
+
+
+
+
+
+
+
